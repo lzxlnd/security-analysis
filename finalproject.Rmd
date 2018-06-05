@@ -1,0 +1,276 @@
+---
+title: "附录"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup,include=FALSE}
+library(ggplot2)  
+library(mcga)    #遗传算法的包   
+library(dplyr)
+
+
+setwd("C:/Users/xinjun li/Desktop/证券市场与投资")
+
+```
+###处理数据
+
+```{r textile,warning=FALSE}
+##textile.R
+
+tex<-na.omit(read.csv("C:/Users/xinjun li/Desktop/证券市场与投资/纺织/TRDweek.csv")) #读入数据 
+
+tex$Stkcd<-as.factor(tex$Stkcd)    #修改列格式为factor
+tex$Trdwnt<-as.factor(tex$Trdwnt) 
+summary(tex)     #查看数据
+
+#samp_com<-sample(levels(tex$Stkcd),15) #random sample 15 companies
+# OR
+avg<-tapply(tex$Wretnd,tex$Stkcd,mean)
+
+samp_com<-which(avg>=0)%>%levels(tex$Stkcd)[.]
+#samp_com<-tail(order(avg),n=15)%>%levels(tex$Stkcd)[.] #选取均值最大的n支股票
+
+ndate<-levels(tex$Trdwnt)     #存储所有日期
+
+
+
+x<-data.frame(matrix(as.numeric(NA),nrow = length(ndate),ncol = length(samp_com)))    #建立矩阵，由于存储筛选数据
+
+names(x)<-samp_com       #命名x的列
+row.names(x)<-ndate      #命名x的行
+#samp_com<-as.factor(samp_com)
+#ndate<-as.factor(ndate)
+
+for (i in 1:length(ndate)) {
+  for (j in 1:length(samp_com)) {
+    if(any(tex$Stkcd==samp_com[j]&tex$Trdwnt==ndate[i])) #判断是否存在满足筛选日期和股票代码的数据
+      x[i,j]<-tex$Wretnd[tex$Stkcd==samp_com[j]&tex$Trdwnt==ndate[i]]
+  }
+}
+
+#进一步删选股票
+y=0
+for (i in 1:ncol(x)) {
+  if(sum(is.na(x[,i]))>nrow(x)/3)
+    if(y==0)
+      y=-i
+    else
+      y<-c(y,-i)
+}
+
+if(y!=0)x<-x[y]
+sort(apply(x,2,function(k)mean(k,na.rm = TRUE)),decreasing = TRUE)
+sort(apply(x,2,function(k)var(k,na.rm = TRUE)))
+
+samp_com<-names(x)
+samp_com
+
+head(x)
+#return(x)  #return x as data frame
+
+
+```
+
+###构造投资组合
+
+```{r camp, warning=FALSE}
+##portfolio.R
+
+set.seed(1)
+
+source("textile.R")  #此文件用于处理数据和选取公司,返回值x为dataframe
+
+
+n<-as.numeric(ncol(x)) #n是选取公司数
+r0<-1.015^(7/365)-1   #无风险利率
+
+mu<-sapply(1:n,function(k) mean(x[,k],na.rm = TRUE))
+#mu是每家公司的期望回报率
+
+va<-cov(x,use = "complete.obs")
+#n家公司的协方差矩阵
+
+slop<-function(z){            #计算斜率，z是权重向量
+  y<-as.matrix(z)/sum(z)
+  sigma<-sqrt(t(y)%*%va%*%y)  #计算方差
+  sl<-(mu%*%y-r0)/sigma
+  return(sl)
+}
+
+
+si_mu<-function(z){           #计算投资组合的期望回报和方差
+  y<-as.matrix(z)/sum(z)
+  sigma<-sqrt(t(y)%*%va%*%y)
+  return(c(sigma,mu%*%y))
+}
+
+U<-function(x,A=1){   #定义效用函数，其中x=c(sigma,mu)
+  x[2]-1/2*A*x[1]^2
+}
+
+
+# 运行遗传算法
+pop=1000
+m <- mcga(   popsize=pop,        #种群大小
+             chsize=n, 
+             minval=-1, 
+             maxval=1, 
+             maxiter=1000,        #迭代次数
+             crossprob=.9, 
+             mutateprob=0.01, 
+             evalFunc=function(z){-slop(z)})
+
+
+#wei<-sapply(1:pop,function(k)as.matrix(m$population[k,])/sum(m$population[k,]))    #存储population权重
+
+opt<-optim(as.matrix(m$population[1,])/sum(m$population[1,]),function(z){-slop(z)})
+
+
+
+# 运行遗传算法
+
+m <- mcga(   popsize=pop,        #种群大小
+             chsize=n, 
+             minval=-1, 
+             maxval=1, 
+             maxiter=1,        #迭代次数
+             crossprob=.9, 
+             mutateprob=0.01, 
+             evalFunc=function(z){-slop(z)})
+
+
+wei<-sapply(1:pop,function(k)as.matrix(m$population[k,])/sum(m$population[k,]))    #存储population权重
+
+wei<-cbind(opt$par,wei)
+pop<-pop+1
+
+# 最优化的个体结果
+sl<- slop(wei[,1])
+
+
+#存储population中的点
+dot<-sapply(1:pop,function(k) si_mu(wei[,k]))
+dot<-data.frame(t(dot))
+dot<-cbind(dot,data.frame(c("optimal",rep("portfolio",pop-1))))
+names(dot)<-c("risk","return","class")
+
+#存储原始数据点（各公司的数据）
+xdot<-sapply(1:n,function(k)c(sqrt(va[k,k]),mu[k]))
+xdot<-data.frame(t(xdot))
+xdot<-cbind(xdot,data.frame(rep("stock",n)))
+names(xdot)<-c("risk","return","class")
+dot<-rbind(dot[dot$class=="portfolio",],xdot,dot[1,])
+
+
+#作图
+plot<-ggplot(data = dot,aes(x=dot$risk,y=dot$return))+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)+xlab("risk")+ylab("return")+ggtitle("投资组合")+xlim(0,.2)+ylim(-.03,.33)  
+
+plot<-plot+geom_abline(intercept = r0,slope = sl,color="brown",size=1)+geom_point(aes(color=class,shape=class,label=dot$class),size=4)
+
+
+plot            #画图
+
+sl              #斜率
+wei[,1]         #最优解的权重
+si_mu(wei[,1])  #最优解点的位置(方差,期望回报率)
+
+A=10
+maxu<-optimise(function(s){U(c(s,sl*s+r0),A)},c(0,.2),maximum = TRUE)
+names(maxu)<-c("sigma","maxU")
+maxu
+
+mpoint<-data.frame(t(c(maxu$sigma,sl*maxu$sigma+r0)))
+
+f=function(z){maxu$maxU+1/2*A*z^2}
+
+plot+stat_function(fun=f,col="orange",size=1.2,linetype=4)+geom_point(data=mpoint,aes(x=mpoint$X1,y=mpoint$X2))+geom_text(aes(x=.17,y=.3,label="indifference curve"),color="orange")   
+
+```
+
+
+##时间序列分析
+
+```{r}
+##ts_ananysis.R
+
+#source("portfolio.R")
+
+
+z<-as.data.frame(matrix(nrow = 2,ncol = ncol(x)))
+names(z)<-names(x)
+
+for(i in 1:ncol(x)){
+  y<-ts(na.omit(x[,i]))
+  ret_ar<-ar(y,method = 'ols', order.max = 3)
+  z[,i]<-predict(ret_ar,y,n.ahead=2,se.fit = FALSE)
+  seqplot.ts(y,z[,i])
+}
+
+
+pre_port<-apply(z,1,function(k)weighted.mean(k,wei[,1]))
+pre_port
+
+```
+
+###随机模拟
+
+```{r,warning=FALSE}
+
+r0<-.1
+x<-data.frame(matrix(runif(40,-.2,.7),ncol = 2,nrow = 20))
+n<-as.numeric(ncol(x)) #n
+mu<-sapply(1:n,function(k) mean(x[,k],na.rm = TRUE))
+#mu
+va<-cov(x,use = "complete.obs")
+#n
+mu;va
+
+pop=400
+m <- mcga( popsize=pop, 
+           chsize=n,
+           minval=0.0,
+           maxval=1,
+           maxiter=1,
+           crossprob=1.0,
+           mutateprob=0.01,
+           evalFunc=function(z){-slop(z)})
+
+wei<-sapply(1:pop,function(k)as.matrix(m$population[k,])/sum(m$population[k,])) #??????population??????
+
+sl<- slop(wei[,1])
+
+#population
+dot<-sapply(1:pop,function(k) si_mu(wei[,k]))
+dot<-data.frame(t(dot))
+dot<-cbind(dot,data.frame(c("optimal",rep("portfolio",pop-1))))
+names(dot)<-c("risk","return","class")
+
+
+xdot<-sapply(1:n,function(k)c(sqrt(va[k,k]),mu[k]))
+xdot<-data.frame(t(xdot))
+xdot<-cbind(xdot,data.frame(rep("stock",n)))
+names(xdot)<-c("risk","return","class")
+dot<-rbind(dot[dot$class=="portfolio",],xdot,dot[1,])
+
+##边界
+q<-quantile(dot$return,c(seq(0,.04,.02),seq(.05,.95,.05),seq(.96,1,.02)))
+bond<-dot[dot$return==min(dot$return),]
+for (i in 1:24) {
+  m<-min(dot$risk[dot$return>=q[i]&dot$return<=q[i+1]])
+  bond<-rbind(bond,c(m,dot$return[dot$risk==m]))
+  }
+bond<-rbind(bond,dot[dot$return==max(dot$return),])
+
+
+#作图
+plot<-ggplot(data = dot,aes(x=dot$risk,y=dot$return))+xlab("standard diviation")+ylab("expection")#+ggtitle("投资组合")#+xlim(0,.16)+ylim(-.01,.05)#+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)
+
+plot<-plot+geom_abline(intercept = r0,slope = sl,color="brown",size=1)+geom_point(aes(color=class,shape=class,label=dot$class),size=2)#+geom_path(data=bond,aes(x=bond$risk,y=bond$return),color="yellow",size=1)   #画切线和边界）
+
+plot 
+```
+
+
